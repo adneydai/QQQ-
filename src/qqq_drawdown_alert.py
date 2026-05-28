@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 SYMBOL = "QQQ"
 LOOKBACK_DAYS = 60
 THRESHOLDS = (10, 20, 30)
-ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 PUSHPLUS_URL = "https://www.pushplus.plus/send"
 NEW_YORK_TZ = ZoneInfo("America/New_York")
 
@@ -33,28 +33,38 @@ class DrawdownReport:
     year_alert_level: int | None
 
 
-def parse_alpha_vantage_daily(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    for error_key in ("Error Message", "Note", "Information"):
-        if error_key in payload:
-            raise MarketDataError(str(payload[error_key]))
+def parse_yahoo_chart(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    chart = payload.get("chart")
+    if not isinstance(chart, dict):
+        raise MarketDataError("Yahoo payload is missing chart data")
 
-    series = payload.get("Time Series (Daily)")
-    if not isinstance(series, dict):
-        raise MarketDataError("Alpha Vantage payload is missing daily time series")
+    error = chart.get("error")
+    if error:
+        if isinstance(error, dict):
+            raise MarketDataError(str(error.get("description") or error))
+        raise MarketDataError(str(error))
+
+    results = chart.get("result")
+    if not results:
+        raise MarketDataError("Yahoo payload is missing chart result")
+
+    result = results[0]
+    timestamps = result.get("timestamp") or []
+    indicators = result.get("indicators") or {}
+    quotes = indicators.get("quote") or []
+    closes = quotes[0].get("close") if quotes else None
+    if not timestamps or not closes:
+        raise MarketDataError("Yahoo payload is missing daily close prices")
 
     bars = []
-    for date_text, values in series.items():
-        if not isinstance(values, dict) or "4. close" not in values:
-            raise MarketDataError(f"Alpha Vantage row for {date_text} is missing close price")
-        try:
-            bar_date = dt.date.fromisoformat(date_text)
-            close = float(values["4. close"])
-        except (TypeError, ValueError) as exc:
-            raise MarketDataError(f"Alpha Vantage row for {date_text} is invalid") from exc
-        bars.append({"date": bar_date, "close": close})
+    for timestamp, close in zip(timestamps, closes):
+        if close is None:
+            continue
+        bar_date = dt.datetime.fromtimestamp(timestamp, tz=NEW_YORK_TZ).date()
+        bars.append({"date": bar_date, "close": float(close)})
 
     if not bars:
-        raise MarketDataError("Alpha Vantage daily time series is empty")
+        raise MarketDataError("Yahoo daily time series is empty")
 
     return sorted(bars, key=lambda bar: bar["date"])
 
@@ -155,17 +165,10 @@ def should_skip_for_stale_data(latest_date: dt.date, now_utc: dt.datetime | None
     return latest_date != current_new_york_date
 
 
-def fetch_alpha_vantage_daily(api_key: str, symbol: str = SYMBOL) -> dict[str, Any]:
-    query = parse.urlencode(
-        {
-            "function": "TIME_SERIES_DAILY",
-            "symbol": symbol,
-            "outputsize": "full",
-            "apikey": api_key,
-        }
-    )
-    url = f"{ALPHA_VANTAGE_URL}?{query}"
-    req = request.Request(url, headers={"User-Agent": "qqq-drawdown-alert/1.0"})
+def fetch_yahoo_chart(symbol: str = SYMBOL) -> dict[str, Any]:
+    query = parse.urlencode({"range": "1y", "interval": "1d", "events": "history"})
+    url = f"{YAHOO_CHART_URL}/{parse.quote(symbol)}?{query}"
+    req = request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with request.urlopen(req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -206,15 +209,12 @@ def format_alert(level: int | None) -> str:
 
 
 def run() -> int:
-    alpha_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     pushplus_token = os.environ.get("PUSHPLUS_TOKEN")
-    if not alpha_key:
-        raise RuntimeError("ALPHA_VANTAGE_API_KEY is not set")
     if not pushplus_token:
         raise RuntimeError("PUSHPLUS_TOKEN is not set")
 
-    market_payload = fetch_alpha_vantage_daily(alpha_key)
-    bars = parse_alpha_vantage_daily(market_payload)
+    market_payload = fetch_yahoo_chart()
+    bars = parse_yahoo_chart(market_payload)
     report = calculate_report(bars)
 
     if should_skip_for_stale_data(report.latest_date):

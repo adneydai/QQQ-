@@ -8,7 +8,7 @@ from src.qqq_drawdown_alert import (
     build_pushplus_message,
     build_pushplus_payload,
     calculate_report,
-    parse_alpha_vantage_daily,
+    parse_yahoo_chart,
     send_pushplus_message,
     should_skip_for_stale_data,
     triggered_level,
@@ -112,16 +112,27 @@ class MessageTests(unittest.TestCase):
         )
 
 
-class AlphaVantageParsingTests(unittest.TestCase):
-    def test_parses_daily_time_series_sorted_oldest_first(self):
+class YahooParsingTests(unittest.TestCase):
+    def test_parses_yahoo_chart_sorted_oldest_first(self):
         payload = {
-            "Time Series (Daily)": {
-                "2026-01-03": {"4. close": "470.00"},
-                "2026-01-02": {"4. close": "610.00"},
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [1767418200, 1767331800],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "close": [470.0, 610.0],
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "error": None,
             }
         }
 
-        bars = parse_alpha_vantage_daily(payload)
+        bars = parse_yahoo_chart(payload)
 
         self.assertEqual(
             bars,
@@ -131,13 +142,26 @@ class AlphaVantageParsingTests(unittest.TestCase):
             ],
         )
 
-    def test_raises_clear_error_for_alpha_vantage_error_payload(self):
-        with self.assertRaisesRegex(MarketDataError, "Invalid API call"):
-            parse_alpha_vantage_daily({"Error Message": "Invalid API call."})
+    def test_yahoo_parser_skips_null_closes(self):
+        payload = {
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [1767331800, 1767418200],
+                        "indicators": {"quote": [{"close": [610.0, None]}]},
+                    }
+                ],
+                "error": None,
+            }
+        }
 
-    def test_raises_clear_error_when_time_series_is_missing(self):
-        with self.assertRaisesRegex(MarketDataError, "missing daily time series"):
-            parse_alpha_vantage_daily({"Meta Data": {}})
+        self.assertEqual(parse_yahoo_chart(payload), [{"date": dt.date(2026, 1, 2), "close": 610.0}])
+
+    def test_yahoo_parser_raises_clear_error(self):
+        payload = {"chart": {"result": None, "error": {"description": "rate limited"}}}
+
+        with self.assertRaisesRegex(MarketDataError, "rate limited"):
+            parse_yahoo_chart(payload)
 
 
 class FreshnessTests(unittest.TestCase):
