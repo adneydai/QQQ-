@@ -1,0 +1,29 @@
+name: Daily QQQ Drawdown Alert
+
+on:
+  schedule:
+    # 23:10 UTC is about 07:10 Beijing time the next day.
+    - cron: "10 23 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  send-alert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: python -m unittest -v
+
+      - name: Send QQQ drawdown alert
+        env:
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python -m src.qqq_drawdown_alert
